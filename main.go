@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"github.com/go-chi/chi/v5"
 	"net/http"
+	"sort"
+	"strconv"
 )
 
 type Book struct {
@@ -162,6 +164,27 @@ func deleteBook(w http.ResponseWriter, r *http.Request) {
 
 }
 
+func getTopBooks(w http.ResponseWriter, r *http.Request) {
+	params := chi.URLParam(r, "limit")
+	limit, err := strconv.Atoi(params)
+	if err != nil {
+		http.Error(w, "error while parsing limit", http.StatusBadRequest)
+	}
+	var books []Book
+	for _, val := range bookList {
+		books = append(books, val)
+	}
+	sort.Slice(books, func(i, j int) bool {
+		return books[i].Price > books[j].Price
+	})
+	top := books[:limit]
+	err = json.NewEncoder(w).Encode(top)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
 func main() {
 	Init()
 	r := chi.NewRouter()
@@ -172,5 +195,6 @@ func main() {
 	r.Post("/book", addBook)
 	r.Put("/book/{id}", updateBook)
 	r.Delete("/book/{id}", deleteBook)
+	r.Get("/books/top/{limit}", getTopBooks)
 	http.ListenAndServe(":8080", r)
 }
