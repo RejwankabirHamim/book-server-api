@@ -2,10 +2,17 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"github.com/dgrijalva/jwt-go"
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/jwtauth/v5"
+	"github.com/lestrrat-go/jwx/v2/jwa"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
+	"time"
 )
 
 type Book struct {
@@ -27,6 +34,18 @@ type Credential struct {
 	Password string `json:"password"`
 }
 
+type Claims struct {
+	Username string `json:"username"`
+	jwt.StandardClaims
+}
+
+var users = map[string]string{
+	"user1": "password1",
+	"user2": "password2",
+}
+
+var jwtkey = []byte("secret_key")
+var tokenAuth = jwtauth.New(string(jwa.HS256), jwtkey, nil)
 var (
 	authors = []Author{
 		{ID: "1", FirstName: "John", LastName: "Doe"},
@@ -185,16 +204,89 @@ func getTopBooks(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func logIn(w http.ResponseWriter, r *http.Request) {
+	var cred Credential
+	err := json.NewDecoder(r.Body).Decode(&cred)
+	if err != nil {
+		http.Error(w, "Bad Format", http.StatusBadRequest)
+		return
+	}
+	expectedPassword, ok := users[cred.Username]
+	fmt.Println(expectedPassword, ok)
+
+	if !ok || expectedPassword != cred.Password {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	expirationTime := time.Now().Add(time.Hour * 2)
+	_, tokenString, err := tokenAuth.Encode(map[string]interface{}{
+		"aud": cred.Username,
+		"exp": expirationTime.Unix(),
+	})
+	if err != nil {
+		http.Error(w, "Can not generate jwt", http.StatusInternalServerError)
+		return
+	}
+	fmt.Println(tokenString)
+
+	http.SetCookie(w, &http.Cookie{
+		Name:    "jwt",
+		Value:   tokenString,
+		Expires: expirationTime,
+	})
+
+	w.WriteHeader(http.StatusOK)
+	_, err = w.Write([]byte("Successfully Logged In"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+}
+
+func logOut(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:    "jwt",
+		Expires: time.Now(),
+	})
+	w.WriteHeader(http.StatusOK)
+	_, err := w.Write([]byte("Successfully Logged Out"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
 func main() {
 	Init()
 	r := chi.NewRouter()
+	r.Use(middleware.RequestID)
+	r.Use(middleware.Logger)
+	r.Use(middleware.Recoverer)
+	r.Use(middleware.URLFormat)
+
+	r.Post("/login", logIn)
+	r.Post("/logout", logOut)
+
+	r.Group(func(r chi.Router) {
+		r.Route("/book", func(r chi.Router) {
+			r.Use(jwtauth.Verifier(tokenAuth))
+			r.Use(jwtauth.Authenticator(tokenAuth))
+			r.Post("/", addBook)
+			r.Put("/{id}", updateBook)
+			r.Delete("/{id}", deleteBook)
+		})
+	})
+
 	r.Get("/books", getBooks)
 	r.Get("/book/{id}", getBook)
 	r.Get("/authors", getAuthors)
 	r.Get("/author/{id}", getAuthor)
-	r.Post("/book", addBook)
-	r.Put("/book/{id}", updateBook)
-	r.Delete("/book/{id}", deleteBook)
 	r.Get("/books/top/{limit}", getTopBooks)
-	http.ListenAndServe(":8080", r)
+	fmt.Println("Listening and Serving to 8080")
+	err := http.ListenAndServe(":8080", r)
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+
 }
