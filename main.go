@@ -2,11 +2,32 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"github.com/dgrijalva/jwt-go"
 	"github.com/go-chi/chi/v5"
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
+	"time"
 )
+
+var jwtkey = []byte("secret_key")
+
+var users = map[string]string{
+	"user1": "password1",
+	"user2": "password2",
+}
+
+type Credential struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type Claims struct {
+	Username string `json:"username"`
+	jwt.StandardClaims
+}
 
 type Book struct {
 	ID       string  `json:"id"`
@@ -20,11 +41,6 @@ type Author struct {
 	ID        string `json:"id"`
 	FirstName string `json:"first_name"`
 	LastName  string `json:"last_name"`
-}
-
-type Credential struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
 }
 
 var (
@@ -54,6 +70,71 @@ func Init() {
 		bookList[val.ID] = val
 	}
 
+}
+
+func Login(w http.ResponseWriter, r *http.Request) {
+	var credential Credential
+	err := json.NewDecoder(r.Body).Decode(&credential)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	expectedPassword, ok := users[credential.Username]
+	if !ok || expectedPassword != credential.Password {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	expirationTime := time.Now().Add(time.Minute * 4)
+	claims := &Claims{
+		Username: credential.Username,
+		StandardClaims: jwt.StandardClaims{
+			ExpiresAt: expirationTime.Unix(),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	tokenString, err := token.SignedString(jwtkey)
+
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:    "token",
+		Value:   tokenString,
+		Expires: expirationTime,
+	})
+}
+
+func Home(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie("token")
+	if err != nil {
+		if err == http.ErrNoCookie {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	tokenString := cookie.Value
+	claims := &Claims{}
+	tkn, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
+		return jwtkey, nil
+	})
+	if err != nil {
+		if err == jwt.ErrSignatureInvalid {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	if !tkn.Valid {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	w.Write([]byte(fmt.Sprintf("Hello %s!", claims.Username)))
 }
 
 func getBooks(w http.ResponseWriter, r *http.Request) {
@@ -196,5 +277,12 @@ func main() {
 	r.Put("/book/{id}", updateBook)
 	r.Delete("/book/{id}", deleteBook)
 	r.Get("/books/top/{limit}", getTopBooks)
-	http.ListenAndServe(":8080", r)
+	r.Post("/login", Login)
+	r.Get("/home", Home)
+	fmt.Println("Listening and Serving to 8080")
+	err := http.ListenAndServe(":8080", r)
+	if err != nil {
+		log.Fatalln(err)
+		return
+	}
 }
