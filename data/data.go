@@ -30,10 +30,7 @@ type Claims struct {
 	jwt.StandardClaims
 }
 
-var Users = map[string]string{
-	"user1": "password1",
-	"user2": "password2",
-}
+var Users = make(map[string]string)
 
 var jwtkey = []byte("secret_key")
 var TokenAuth = jwtauth.New(string(jwa.HS256), jwtkey, nil)
